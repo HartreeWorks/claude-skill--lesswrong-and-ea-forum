@@ -287,6 +287,176 @@ def get_post_by_slug(identifier, forum="lesswrong"):
     raise Exception(f"Post not found: {identifier}")
 
 
+def get_post_comments(post_id, limit=500, forum="lesswrong"):
+    """Fetch all comments for a post by post ID.
+
+    Args:
+        post_id: The post's _id
+        limit: Maximum comments to fetch (default 500)
+        forum: Target forum
+
+    Returns:
+        List of comment dicts with threading info
+    """
+    query = """
+    query GetPostComments($postId: String!, $limit: Int) {
+      comments(input: {
+        terms: {
+          view: "postCommentsTop",
+          postId: $postId,
+          limit: $limit
+        }
+      }) {
+        results {
+          _id
+          postedAt
+          baseScore
+          voteCount
+          parentCommentId
+          topLevelCommentId
+          user {
+            displayName
+            slug
+          }
+          contents {
+            markdown
+            plaintextMainText
+          }
+        }
+      }
+    }
+    """
+
+    data = graphql_query(query, {"postId": post_id, "limit": limit}, forum)
+    return data.get("comments", {}).get("results", [])
+
+
+def build_comment_tree(comments):
+    """Build a nested tree structure from flat comment list.
+
+    Args:
+        comments: List of comment dicts with parentCommentId
+
+    Returns:
+        List of top-level comments, each with 'replies' containing nested children
+    """
+    # Index comments by ID
+    by_id = {c["_id"]: {**c, "replies": []} for c in comments}
+
+    top_level = []
+
+    for comment in comments:
+        comment_with_replies = by_id[comment["_id"]]
+        parent_id = comment.get("parentCommentId")
+
+        if parent_id and parent_id in by_id:
+            by_id[parent_id]["replies"].append(comment_with_replies)
+        else:
+            top_level.append(comment_with_replies)
+
+    # Sort top-level by score descending
+    top_level.sort(key=lambda c: c.get("baseScore", 0), reverse=True)
+
+    return top_level
+
+
+def format_comment_tree_markdown(comments, post_title, post_url, indent_level=0):
+    """Format a comment tree as markdown with proper nesting.
+
+    Args:
+        comments: List of comments (with 'replies' for children)
+        post_title: Title of the post
+        post_url: URL of the post
+        indent_level: Current nesting level (0 = top-level thread)
+
+    Returns:
+        Markdown string
+    """
+    lines = []
+
+    for comment in comments:
+        user = comment.get("user", {}) or {}
+        username = user.get("displayName", "Anonymous")
+        date = format_date(comment.get("postedAt", ""))
+        score = comment.get("baseScore", 0)
+        contents = comment.get("contents", {}) or {}
+        markdown = contents.get("markdown", contents.get("plaintextMainText", "(no content)"))
+
+        # Use header levels based on indent (## for top-level, ### for replies, etc.)
+        # Cap at h6
+        header_level = min(2 + indent_level, 6)
+        header = "#" * header_level
+
+        lines.append(f"{header} {username} · {date} · score: {score}\n")
+        lines.append(f"{markdown}\n")
+
+        # Recursively format replies
+        if comment.get("replies"):
+            lines.append(format_comment_tree_markdown(
+                comment["replies"],
+                post_title,
+                post_url,
+                indent_level + 1
+            ))
+
+    return "\n".join(lines)
+
+
+def save_comments_to_markdown(post, comments_tree, forum="lesswrong"):
+    """Save comments to a markdown file in saved-data/YYYY-MM-DD/
+
+    Args:
+        post: Post dict with title, slug, pageUrl
+        comments_tree: Nested comment tree from build_comment_tree()
+        forum: Forum key (will be resolved to canonical key)
+
+    Returns:
+        Path to the saved file
+    """
+    from datetime import date as date_module
+
+    today = date_module.today().strftime("%Y-%m-%d")
+    save_dir = SKILL_DIR / "saved-data" / today
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{post['slug']}-comments.md"
+    filepath = save_dir / filename
+
+    # Count total comments (flatten tree)
+    def count_comments(tree):
+        total = len(tree)
+        for c in tree:
+            total += count_comments(c.get("replies", []))
+        return total
+
+    total_comments = count_comments(comments_tree)
+
+    # Resolve forum key to get the proper name
+    forum_key = resolve_forum(forum)
+    forum_name = FORUMS.get(forum_key, {}).get("name", forum)
+
+    # Build markdown
+    lines = [
+        f"# Comments on: {post['title']}\n",
+        f"**Post URL:** {post.get('pageUrl', 'N/A')}",
+        f"**Forum:** {forum_name}",
+        f"**Fetched:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"**Total comments:** {total_comments}\n",
+        "---\n",
+    ]
+
+    # Add each top-level thread
+    for i, thread in enumerate(comments_tree, 1):
+        lines.append(f"## Thread {i}\n")
+        lines.append(format_comment_tree_markdown([thread], post["title"], post.get("pageUrl", ""), indent_level=1))
+        lines.append("\n---\n")
+
+    with open(filepath, "w") as f:
+        f.write("\n".join(lines))
+
+    return filepath
+
+
 def search_posts(query_str, limit=20, forum="lesswrong"):
     """Search posts by text query."""
     query = """
@@ -851,6 +1021,17 @@ Examples:
     post_parser.add_argument("--json", "-j", action="store_true",
                               help="Output as JSON")
 
+    # Get comments for a post
+    post_comments_parser = subparsers.add_parser("post-comments",
+                                                  help="Get all comments for a post")
+    post_comments_parser.add_argument("identifier", help="Post slug, ID, or URL")
+    post_comments_parser.add_argument("--limit", "-l", type=int, default=500,
+                                       help="Maximum comments to fetch (default: 500)")
+    post_comments_parser.add_argument("--json", "-j", action="store_true",
+                                       help="Output as JSON")
+    post_comments_parser.add_argument("--save", "-s", action="store_true",
+                                       help="Save to markdown file in saved-data/")
+
     # Search posts
     search_posts_parser = subparsers.add_parser("search", help="Search posts")
     search_posts_parser.add_argument("query", help="Search query")
@@ -971,6 +1152,40 @@ Examples:
                 contents = post.get("contents", {}) or {}
                 markdown = contents.get("markdown", "(No content)")
                 print(markdown)
+
+        elif args.command == "post-comments":
+            # Get the post first to get its ID
+            post = get_post_by_slug(args.identifier, forum)
+            comments = get_post_comments(post["_id"], args.limit, forum)
+            comments_tree = build_comment_tree(comments)
+
+            if args.json:
+                print(json.dumps(comments, indent=2))
+            elif args.save:
+                filepath = save_comments_to_markdown(post, comments_tree, forum)
+                print(f"Comments saved to: {filepath}")
+            else:
+                # Print summary
+                print(f"\nComments on: {post['title']}")
+                print(f"Total comments: {len(comments)}")
+                print(f"Top-level threads: {len(comments_tree)}")
+                print(f"\n{'='*60}\n")
+
+                for i, thread in enumerate(comments_tree[:10], 1):
+                    user = thread.get("user", {}) or {}
+                    username = user.get("displayName", "Anonymous")
+                    score = thread.get("baseScore", 0)
+                    reply_count = len(thread.get("replies", []))
+                    contents = thread.get("contents", {}) or {}
+                    excerpt = contents.get("plaintextMainText", "")[:150]
+
+                    print(f"Thread {i}: {username} (score: {score}, {reply_count} replies)")
+                    print(f"  \"{excerpt}...\"")
+                    print()
+
+                if len(comments_tree) > 10:
+                    print(f"... and {len(comments_tree) - 10} more threads")
+                print(f"\nUse --save to save full comments to markdown file")
 
         elif args.command == "search":
             results = search_posts(args.query, args.limit, forum)

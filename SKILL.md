@@ -19,6 +19,7 @@ Interact with LessWrong, EA Forum, and Alignment Forum via their GraphQL API.
 
 ### Read (no auth required)
 - Read individual posts
+- Read post comments (with threaded structure)
 - Search posts by query
 - Generate activity digests
 - View user activity and topics
@@ -81,6 +82,27 @@ Search for posts by keyword:
 ```bash
 python ~/.claude/skills/lesswrong-and-ea-forum/scripts/forum_api.py search "AI safety" --limit 10 --forum lw
 ```
+
+### Read post comments
+
+Fetch all comments for a post. When the user asks for post comments, ask whether they want:
+1. **A digest** - Summarise the main discussion threads
+2. **Full comment contents** - Save the complete threaded comments to a markdown file
+
+```bash
+# View comment summary (for digest mode)
+python ~/.claude/skills/lesswrong-and-ea-forum/scripts/forum_api.py post-comments POST-SLUG --forum lw
+
+# Save full comments to markdown (for full contents mode)
+python ~/.claude/skills/lesswrong-and-ea-forum/scripts/forum_api.py post-comments POST-SLUG --forum lw --save
+
+# Get raw JSON data
+python ~/.claude/skills/lesswrong-and-ea-forum/scripts/forum_api.py post-comments POST-SLUG --forum lw --json
+```
+
+**Full contents mode** saves to: `~/.claude/skills/lesswrong-and-ea-forum/saved-data/YYYY-MM-DD/<post-slug>-comments.md`
+
+The saved markdown preserves the threaded structure with proper nesting of replies.
 
 ### Create a draft post
 
@@ -217,6 +239,11 @@ python forum_api.py list-forums
 # Read a post
 python forum_api.py post POST-SLUG --forum lw
 python forum_api.py post POST-SLUG --forum lw --json
+
+# Read post comments
+python forum_api.py post-comments POST-SLUG --forum lw
+python forum_api.py post-comments POST-SLUG --forum lw --json
+python forum_api.py post-comments POST-SLUG --forum lw --save
 
 # Search posts
 python forum_api.py search "query" --limit 20 --forum lw
