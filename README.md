@@ -4,7 +4,7 @@ A Claude Code skill for interacting with LessWrong, EA Forum, and Alignment Foru
 
 ## Features
 
-- **Read posts** - Fetch any post by slug
+- **Read posts** - Fetch any post by slug, ID, or URL
 - **Search posts** - Search across forum content
 - **Create drafts** - Create draft posts (requires auth token)
 - **List drafts** - View your unpublished drafts
@@ -16,23 +16,10 @@ See [SKILL.md](./SKILL.md) for complete documentation and usage instructions.
 
 ## Installation
 
-To use this skill with Claude Code, clone it into your skills directory:
+Paste this repository URL into Claude Code and ask Claude to install it.
 
-```bash
-git clone https://github.com/HartreeWorks/claude-skill--lesswrong-and-ea-forum.git ~/.claude/skills/lesswrong-and-ea-forum
-```
+## About
 
-Then restart Claude Code to load the skill.
+Created by [Peter Hartree](https://x.com/peterhartree). For updates, follow [AI Wow](https://wow.pjh.is), my AI uplift newsletter.
 
-## Quick start
-
-```bash
-# Search for posts
-python ~/.claude/skills/lesswrong-and-ea-forum/scripts/forum_api.py search "AI safety"
-
-# Read a post
-python ~/.claude/skills/lesswrong-and-ea-forum/scripts/forum_api.py post graphql-tutorial-for-lesswrong
-
-# Create a draft (requires auth setup)
-python ~/.claude/skills/lesswrong-and-ea-forum/scripts/forum_api.py create-draft --title "My Post" --content "Hello world"
-```
+Find more skills at [HartreeWorks/skills](https://github.com/HartreeWorks/skills).
