@@ -1,4 +1,8 @@
 {
+  "auth": {
+    "lesswrong": null,
+    "eaforum": null
+  },
   "subscriptions": [
     {
       "type": "user",

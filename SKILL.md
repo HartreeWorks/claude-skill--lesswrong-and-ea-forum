@@ -1,11 +1,11 @@
 ---
-name: forum-digest
-description: This skill should be used when the user says "forum digest", "lw digest", "ea forum digest", "alignment forum digest", "lesswrong updates", "what has X posted on lesswrong/ea forum", "posts about [topic]", or mentions forum activity tracking. Creates digests of posts and comments from followed users or topics across LessWrong, EA Forum, and Alignment Forum.
+name: lesswrong-and-ea-forum
+description: Interact with LessWrong and EA Forum. Use when user says "forum digest", "post to lesswrong", "search ea forum", "create draft", "read post", "search posts", or mentions LessWrong/EA Forum content.
 ---
 
-# Forum digest
+# LessWrong and EA Forum
 
-Track users and topics across LessWrong, EA Forum, and Alignment Forum. Generate digests of recent activity with special attention to belief updates and mind changes.
+Interact with LessWrong, EA Forum, and Alignment Forum via their GraphQL API.
 
 ## Supported forums
 
@@ -15,6 +15,18 @@ Track users and topics across LessWrong, EA Forum, and Alignment Forum. Generate
 | EA Forum | `eaforum` | `ea`, `effective-altruism` | forum.effectivealtruism.org |
 | Alignment Forum | `alignmentforum` | `af`, `alignment` | alignmentforum.org |
 
+## Capabilities
+
+### Read (no auth required)
+- Read individual posts
+- Search posts by query
+- Generate activity digests
+- View user activity and topics
+
+### Write (auth required)
+- Create draft posts
+- List your drafts
+
 ## Prerequisites
 
 1. **Python 3** with `requests` library:
@@ -22,17 +34,133 @@ Track users and topics across LessWrong, EA Forum, and Alignment Forum. Generate
    pip install requests
    ```
 
-2. **Configure subscriptions**:
+2. **Configure subscriptions** (for digests):
    ```bash
-   cp ~/.claude/skills/forum-digest/config.example.json ~/.claude/skills/forum-digest/config.json
+   cp ~/.claude/skills/lesswrong-and-ea-forum/config.example.json ~/.claude/skills/lesswrong-and-ea-forum/config.json
    ```
+
+3. **Set up authentication** (for creating drafts):
+   See "Authentication setup" below.
+
+## Authentication setup
+
+To create draft posts, you need the `loginToken` cookie from your browser:
+
+1. Log into LessWrong or EA Forum in your browser
+2. Open Developer Tools (F12 or Cmd+Option+I)
+3. Go to Network tab
+4. Perform any action (vote, comment, etc.)
+5. Find a request to `/graphql`
+6. In request headers, find the `cookie` header
+7. Copy the `loginToken` value (the hex string after `loginToken=`)
+   - Example: `loginToken=bfb232fd2cc7258bb679bbc5d598a00025795fa3691f7eb4d19c28f3602e2616`
+   - Copy just: `bfb232fd2cc7258bb679bbc5d598a00025795fa3691f7eb4d19c28f3602e2616`
+8. Save the token:
+   ```bash
+   python ~/.claude/skills/lesswrong-and-ea-forum/scripts/forum_api.py set-token --forum lw --token "your-loginToken-value"
+   ```
+
+Tokens expire in approximately 5 years (set by Meteor).
+
+**Security note**: The token is stored in `config.json`. Keep this file private and don't commit it to version control.
+
+## Workflows
+
+### Read a post
+
+Fetch and display a post by its slug (from the URL):
+
+```bash
+python ~/.claude/skills/lesswrong-and-ea-forum/scripts/forum_api.py post graphql-tutorial-for-lesswrong --forum lw
+```
+
+### Search posts
+
+Search for posts by keyword:
+
+```bash
+python ~/.claude/skills/lesswrong-and-ea-forum/scripts/forum_api.py search "AI safety" --limit 10 --forum lw
+```
+
+### Create a draft post
+
+Create a draft from inline content:
+
+```bash
+python ~/.claude/skills/lesswrong-and-ea-forum/scripts/forum_api.py create-draft \
+  --title "My Post Title" \
+  --content "# Introduction\n\nThis is my post content in markdown." \
+  --forum lw
+```
+
+Create a draft from a file:
+
+```bash
+python ~/.claude/skills/lesswrong-and-ea-forum/scripts/forum_api.py create-draft \
+  --title "My Post Title" \
+  --file /path/to/post.md \
+  --forum ea
+```
+
+Create a link post:
+
+```bash
+python ~/.claude/skills/lesswrong-and-ea-forum/scripts/forum_api.py create-draft \
+  --title "Interesting Article" \
+  --content "My commentary on this article." \
+  --url "https://example.com/article" \
+  --forum lw
+```
+
+Create a question post:
+
+```bash
+python ~/.claude/skills/lesswrong-and-ea-forum/scripts/forum_api.py create-draft \
+  --title "What's the best approach to X?" \
+  --content "Context and details about my question." \
+  --question \
+  --forum lw
+```
+
+### List your drafts
+
+View your unpublished draft posts:
+
+```bash
+python ~/.claude/skills/lesswrong-and-ea-forum/scripts/forum_api.py my-drafts --forum lw
+```
+
+### Generate a digest
+
+For each subscription in config.json, fetch recent activity:
+
+**User subscriptions:**
+```bash
+python ~/.claude/skills/lesswrong-and-ea-forum/scripts/forum_api.py user-activity daniel-kokotajlo --forum lw --days 7 --json
+```
+
+**Topic subscriptions:**
+```bash
+python ~/.claude/skills/lesswrong-and-ea-forum/scripts/forum_api.py topic-activity ai-safety --forum ea --days 7 --json
+```
+
+When generating a digest:
+1. Fetch activity for each subscription
+2. Read the full content (`contents.markdown`)
+3. Generate 1-2 sentence summaries
+4. Detect belief updates (phrases like "I was wrong", "I've updated", "changed my mind")
+5. Format as markdown with sections by forum, user/topic, and notable belief updates
 
 ## Configuration
 
-Edit `~/.claude/skills/forum-digest/config.json`:
+Edit `~/.claude/skills/lesswrong-and-ea-forum/config.json`:
 
 ```json
 {
+  "auth": {
+    "lesswrong": "your-lw-token-or-null",
+    "eaforum": "your-ea-token-or-null"
+  },
   "subscriptions": [
     {
       "type": "user",
@@ -42,7 +170,7 @@ Edit `~/.claude/skills/forum-digest/config.json`:
     {
       "type": "topic",
       "forum": "eaforum",
-      "slug": "ai-safety"
+      "slug": "ai-governance"
     }
   ],
   "digest_days": 7,
@@ -50,9 +178,19 @@ Edit `~/.claude/skills/forum-digest/config.json`:
 }
 ```
 
+### Configuration fields
+
+| Field | Description |
+|-------|-------------|
+| `auth.lesswrong` | Auth token for LessWrong (also used for Alignment Forum) |
+| `auth.eaforum` | Auth token for EA Forum |
+| `subscriptions` | List of users/topics to track for digests |
+| `digest_days` | Number of days to look back (default: 7) |
+| `output_dir` | Directory for saved digest files |
+
 ### Subscription types
 
-**User subscriptions** track a specific person's posts and comments:
+**User subscriptions** track a person's posts and comments:
 ```json
 {
   "type": "user",
@@ -61,7 +199,7 @@ Edit `~/.claude/skills/forum-digest/config.json`:
 }
 ```
 
-**Topic subscriptions** track all posts tagged with a topic:
+**Topic subscriptions** track posts tagged with a topic:
 ```json
 {
   "type": "topic",
@@ -70,119 +208,44 @@ Edit `~/.claude/skills/forum-digest/config.json`:
 }
 ```
 
-| Field | Description |
-|-------|-------------|
-| `type` | `user` or `topic` |
-| `forum` | `lesswrong`, `eaforum`, or `alignmentforum` |
-| `slug` | Username or topic slug (from the URL) |
-| `digest_days` | Number of days to look back (default: 7) |
-| `output_dir` | Directory for saved digest files |
-
-## Workflow
-
-When the user requests a forum digest:
-
-### 1. Fetch activity
-
-For each subscription, fetch recent activity:
-
-**User subscriptions:**
-```bash
-python ~/.claude/skills/forum-digest/scripts/forum_api.py user-activity USERNAME --forum lw --days 7 --json
-```
-
-**Topic subscriptions:**
-```bash
-python ~/.claude/skills/forum-digest/scripts/forum_api.py topic-activity TOPIC-SLUG --forum ea --days 7 --json
-```
-
-### 2. Review content
-
-For each post and comment retrieved:
-- Read the full content (available in `contents.markdown`)
-- Generate a brief 1-2 sentence summary
-- Note the post/comment URL for linking
-
-### 3. Detect belief updates
-
-Analyse the content for indicators of belief changes:
-- Phrases like "I was wrong", "I've updated", "I now think", "changed my mind"
-- "I used to believe", "reconsidering", "I'm less confident"
-- Explicit retractions or corrections
-- Responses to criticism that acknowledge valid points
-
-For detected updates, provide:
-- A quote of the relevant passage
-- Brief analysis of what changed and why
-
-### 4. Generate digest
-
-Format the output as markdown:
-
-```markdown
-# Forum digest
-**Period:** [start date] - [end date]
-
----
-
-## LessWrong
-
-### @daniel-kokotajlo
-
-#### Posts (2)
-
-**[Post Title](url)** - [date]
-[1-2 sentence summary]
-
-#### Comments (5)
-
-**On "[Parent Post Title](url)"** - [date]
-[1-2 sentence summary of what they said]
-
----
-
-## EA Forum
-
-### Topic: AI governance
-
-**[Post Title](url)** by @author - [date]
-[1-2 sentence summary]
-
----
-
-## Notable belief updates
-
-**@daniel-kokotajlo** in [post/comment](url):
-> "[relevant quote]"
-
-[Analysis of the update - what they previously thought, what they now think, why]
-```
-
-### 5. Save and display
-
-1. Display the digest in the terminal
-2. Save to `~/.claude/skills/forum-digest/digests/YYYY-MM-DD.md`
-
-## API commands
-
-The Python script provides direct API access:
+## API commands reference
 
 ```bash
 # List available forums
 python forum_api.py list-forums
 
+# Read a post
+python forum_api.py post POST-SLUG --forum lw
+python forum_api.py post POST-SLUG --forum lw --json
+
+# Search posts
+python forum_api.py search "query" --limit 20 --forum lw
+python forum_api.py search "query" --forum ea --json
+
+# Create a draft (requires auth)
+python forum_api.py create-draft --title "Title" --content "Markdown content"
+python forum_api.py create-draft --title "Title" --file path.md
+python forum_api.py create-draft --title "Title" --content "..." --url "https://..."
+python forum_api.py create-draft --title "Title" --content "..." --question
+
+# List your drafts (requires auth)
+python forum_api.py my-drafts --forum lw
+python forum_api.py my-drafts --limit 10 --json
+
+# Set auth token
+python forum_api.py set-token --forum lw --token "your-token"
+python forum_api.py set-token --forum ea --token "your-token"
+
 # User commands
-python forum_api.py user daniel-kokotajlo --forum lw
-python forum_api.py user-activity daniel-kokotajlo --forum lw --days 7
-python forum_api.py user-activity daniel-kokotajlo --forum lw --days 7 --json
-python forum_api.py posts daniel-kokotajlo --forum lw --days 14
-python forum_api.py comments daniel-kokotajlo --forum ea --days 7
+python forum_api.py user USERNAME --forum lw
+python forum_api.py user-activity USERNAME --days 7 --forum lw
+python forum_api.py posts USERNAME --days 14 --forum ea
+python forum_api.py comments USERNAME --days 7 --forum lw
 
 # Topic commands
-python forum_api.py topic ai-safety --forum lw
-python forum_api.py topic-activity ai-safety --forum lw --days 7
-python forum_api.py topic-activity ai-safety --forum lw --days 7 --json
-python forum_api.py search-topics "alignment" --forum af
+python forum_api.py topic TOPIC-SLUG --forum lw
+python forum_api.py topic-activity TOPIC-SLUG --days 7 --forum lw
+python forum_api.py search-topics "query" --limit 10 --forum ea
 ```
 
 ## Finding users and topics
@@ -198,19 +261,21 @@ python forum_api.py search-topics "alignment" --forum af
 
 **"User not found"**: Check the username is correct (case-sensitive, use the URL slug not display name)
 
-**"Tag/topic not found"**: Check the topic slug. Use `search-topics` to find the correct slug.
+**"Post not found"**: Check the post slug from the URL. The slug is the part after `/posts/ID/`
 
-**No posts/comments returned**: The user/topic may not have activity recently. Try increasing `--days`
+**"No auth token configured"**: Run `set-token` command or add token to config.json
 
-**Network errors**: The forum APIs are public but may rate-limit. Wait and retry.
+**"GraphQL errors"**: The API may have changed or your token may be invalid. Try refreshing your auth token.
+
+**Network errors**: The forum APIs may rate-limit. Wait and retry.
 
 ## Notes
 
-- All three forums use the same GraphQL API structure
-- The APIs are public and require no authentication
+- All three forums use the same GraphQL API structure (ForumMagnum)
+- LessWrong and Alignment Forum share the same account/auth token
+- EA Forum requires a separate auth token
+- Drafts are created with `draft: true` and `submitToFrontpage: true`
 - Rate limiting may apply for high-volume requests
-- Comments include `plaintextDescription` for quick previews and `contents.markdown` for full text
-
 
 ## Update check
 
@@ -218,4 +283,3 @@ This is a shared skill. Before executing, check `~/.claude/skills/.update-config
 If `auto_check_enabled` is true and `last_checked_timestamp` is older than `check_frequency_days`,
 mention: "It's been a while since skill updates were checked. Run `/update-skills` to see available updates."
 Do NOT perform network operations - just check the local timestamp.
-

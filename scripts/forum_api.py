@@ -2,9 +2,16 @@
 """
 Forum GraphQL API Client
 
-Fetches posts and comments from LessWrong, EA Forum, and Alignment Forum.
-Supports following users and topics/tags.
-No authentication required - uses public GraphQL API.
+Interact with LessWrong, EA Forum, and Alignment Forum via GraphQL API.
+
+Read operations (no auth required):
+- Fetch posts, comments, user activity
+- Search posts
+- Generate activity digests
+
+Write operations (auth required):
+- Create draft posts
+- List your drafts
 
 API Documentation: https://www.lesswrong.com/posts/LJiGhpq8w4Badr5KJ/graphql-tutorial-for-lesswrong-and-effective-altruism-forum
 """
@@ -107,6 +114,291 @@ def graphql_query(query, variables=None, forum="lesswrong"):
         raise Exception(f"GraphQL errors: {data['errors']}")
 
     return data.get("data", {})
+
+
+def get_auth_token(forum="lesswrong"):
+    """Get auth token for a forum from config.
+
+    Returns None if no token is configured.
+    """
+    config = load_config()
+    auth = config.get("auth", {})
+
+    forum_key = resolve_forum(forum)
+    # Map alignmentforum to lesswrong token (same account)
+    if forum_key == "alignmentforum":
+        forum_key = "lesswrong"
+
+    return auth.get(forum_key)
+
+
+def graphql_query_authenticated(query, variables=None, forum="lesswrong"):
+    """Execute an authenticated GraphQL query.
+
+    Uses cookie-based authentication with loginToken (Meteor auth).
+    Raises an exception if no auth token is configured.
+    """
+    token = get_auth_token(forum)
+    if not token:
+        raise Exception(
+            f"No auth token configured for {forum}. "
+            "See 'set-token' command or add token to config.json."
+        )
+
+    url = get_forum_url(forum)
+
+    payload = {"query": query}
+    if variables:
+        payload["variables"] = variables
+
+    # Use cookie-based auth (Meteor loginToken)
+    response = requests.post(
+        url,
+        json=payload,
+        headers={"Content-Type": "application/json"},
+        cookies={"loginToken": token}
+    )
+    response.raise_for_status()
+
+    data = response.json()
+    if "errors" in data:
+        raise Exception(f"GraphQL errors: {data['errors']}")
+
+    return data.get("data", {})
+
+
+def save_auth_token(forum, token):
+    """Save an auth token to config.json."""
+    config = load_config()
+    if "auth" not in config:
+        config["auth"] = {}
+
+    forum_key = resolve_forum(forum)
+    # Map alignmentforum to lesswrong (same account)
+    if forum_key == "alignmentforum":
+        forum_key = "lesswrong"
+
+    config["auth"][forum_key] = token
+
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=2)
+
+    return forum_key
+
+
+# ============================================================================
+# Post reading and searching (no auth required)
+# ============================================================================
+
+def get_post_by_slug(identifier, forum="lesswrong"):
+    """Fetch a post by ID, slug, or URL.
+
+    Args:
+        identifier: Can be:
+            - Post ID (e.g., "pT75MFsLJArrBGkaF")
+            - Post slug (e.g., "simple-summary-of-ai-safety-laws-1")
+            - Full URL (e.g., "https://lesswrong.com/posts/ID/slug")
+        forum: Target forum
+
+    Returns:
+        Post dict with _id, title, slug, pageUrl, etc.
+    """
+    import re
+
+    # Extract ID from URL if provided
+    url_match = re.search(r'/posts/([a-zA-Z0-9]+)/', identifier)
+    if url_match:
+        post_id = url_match.group(1)
+    # Check if identifier looks like a post ID (alphanumeric, 17 chars)
+    elif re.match(r'^[a-zA-Z0-9]{17}$', identifier):
+        post_id = identifier
+    else:
+        post_id = None
+
+    # Query by ID if we have one
+    if post_id:
+        query = """
+        query GetPostById($documentId: String!) {
+          post(input: { selector: { documentId: $documentId } }) {
+            result {
+              _id
+              title
+              slug
+              pageUrl
+              postedAt
+              baseScore
+              voteCount
+              commentCount
+              user {
+                displayName
+                slug
+              }
+              contents {
+                markdown
+              }
+            }
+          }
+        }
+        """
+        data = graphql_query(query, {"documentId": post_id}, forum)
+        post = data.get("post", {}).get("result")
+        if post:
+            return post
+
+    # Otherwise, search by slug
+    slug = identifier.split('/')[-1]  # Handle both slug and URL-ending-in-slug
+
+    query = """
+    query SearchBySlug($limit: Int) {
+      posts(input: {
+        terms: {
+          limit: $limit
+        }
+      }) {
+        results {
+          _id
+          title
+          slug
+          pageUrl
+          postedAt
+          baseScore
+          voteCount
+          commentCount
+          user {
+            displayName
+            slug
+          }
+          contents {
+            markdown
+          }
+        }
+      }
+    }
+    """
+
+    data = graphql_query(query, {"limit": 1000}, forum)
+    posts = data.get("posts", {}).get("results", [])
+
+    # Find exact slug match
+    for post in posts:
+        if post.get("slug") == slug:
+            return post
+
+    raise Exception(f"Post not found: {identifier}")
+
+
+def search_posts(query_str, limit=20, forum="lesswrong"):
+    """Search posts by text query."""
+    query = """
+    query SearchPosts($searchQuery: String!, $limit: Int) {
+      posts(input: {
+        terms: {
+          query: $searchQuery,
+          limit: $limit
+        }
+      }) {
+        results {
+          _id
+          title
+          slug
+          pageUrl
+          postedAt
+          baseScore
+          voteCount
+          commentCount
+          user {
+            displayName
+            slug
+          }
+        }
+      }
+    }
+    """
+
+    data = graphql_query(query, {"searchQuery": query_str, "limit": limit}, forum)
+    return data.get("posts", {}).get("results", [])
+
+
+# ============================================================================
+# Draft management (auth required)
+# ============================================================================
+
+def create_draft_post(title, contents_markdown, forum="lesswrong",
+                      url=None, question=False):
+    """Create a draft post. Requires authentication.
+
+    Args:
+        title: Post title
+        contents_markdown: Post body in markdown format
+        forum: Target forum (lesswrong, eaforum, alignmentforum)
+        url: Optional URL for link posts
+        question: Set True to create a question post
+
+    Returns:
+        dict with _id, title, slug, pageUrl, draft fields
+    """
+    mutation = """
+    mutation CreatePost($data: CreatePostDataInput!) {
+      createPost(data: $data) {
+        data {
+          _id
+          title
+          slug
+          pageUrl
+          draft
+        }
+      }
+    }
+    """
+
+    variables = {
+        "data": {
+            "title": title,
+            "contents": {
+                "originalContents": {
+                    "type": "markdown",
+                    "data": contents_markdown
+                }
+            },
+            "draft": True,
+            "submitToFrontpage": True
+        }
+    }
+
+    if url:
+        variables["data"]["url"] = url
+    if question:
+        variables["data"]["question"] = True
+
+    data = graphql_query_authenticated(mutation, variables, forum)
+    return data.get("createPost", {}).get("data")
+
+
+def get_my_drafts(limit=50, forum="lesswrong"):
+    """List current user's draft posts. Requires authentication."""
+    query = """
+    query GetMyDrafts($limit: Int) {
+      posts(input: {
+        terms: {
+          view: "drafts",
+          limit: $limit
+        }
+      }) {
+        results {
+          _id
+          title
+          slug
+          pageUrl
+          createdAt
+          modifiedAt
+          draft
+        }
+      }
+    }
+    """
+
+    data = graphql_query_authenticated(query, {"limit": limit}, forum)
+    return data.get("posts", {}).get("results", [])
 
 
 # ============================================================================
@@ -472,23 +764,30 @@ Forums:
   alignmentforum (af) - alignmentforum.org
 
 Examples:
-  Fetch user activity from LessWrong:
-    python forum_api.py user-activity daniel-kokotajlo
+  Read a post:
+    python forum_api.py post graphql-tutorial-for-lesswrong
 
-  Fetch user activity from EA Forum:
-    python forum_api.py user-activity habryka --forum ea
+  Search posts:
+    python forum_api.py search "AI safety" --limit 10
+
+  Create a draft (requires auth):
+    python forum_api.py create-draft --title "My Post" --content "# Hello"
+    python forum_api.py create-draft --title "My Post" --file post.md
+
+  List your drafts (requires auth):
+    python forum_api.py my-drafts
+
+  Set auth token:
+    python forum_api.py set-token --forum lw --token "your-token-here"
+
+  Fetch user activity:
+    python forum_api.py user-activity daniel-kokotajlo --days 7
 
   Fetch topic activity:
     python forum_api.py topic-activity ai-safety --days 14
 
   Search for topics:
     python forum_api.py search-topics "alignment"
-
-  Get user info:
-    python forum_api.py user daniel-kokotajlo
-
-  Get topic info:
-    python forum_api.py topic ai-safety --forum lw
 """
     )
 
@@ -545,6 +844,48 @@ Examples:
 
     # List forums
     subparsers.add_parser("list-forums", help="List available forums")
+
+    # Read a single post
+    post_parser = subparsers.add_parser("post", help="Read a single post by slug")
+    post_parser.add_argument("slug", help="Post slug (from URL)")
+    post_parser.add_argument("--json", "-j", action="store_true",
+                              help="Output as JSON")
+
+    # Search posts
+    search_posts_parser = subparsers.add_parser("search", help="Search posts")
+    search_posts_parser.add_argument("query", help="Search query")
+    search_posts_parser.add_argument("--limit", "-l", type=int, default=20,
+                                      help="Maximum results (default: 20)")
+    search_posts_parser.add_argument("--json", "-j", action="store_true",
+                                      help="Output as JSON")
+
+    # Create draft post (requires auth)
+    create_draft_parser = subparsers.add_parser("create-draft",
+                                                 help="Create a draft post (requires auth)")
+    create_draft_parser.add_argument("--title", "-t", required=True,
+                                      help="Post title")
+    create_draft_parser.add_argument("--content", "-c",
+                                      help="Post content (markdown)")
+    create_draft_parser.add_argument("--file",
+                                      help="Read content from file")
+    create_draft_parser.add_argument("--url", "-u",
+                                      help="URL for link posts")
+    create_draft_parser.add_argument("--question", "-q", action="store_true",
+                                      help="Create as question post")
+
+    # List user's drafts (requires auth)
+    drafts_parser = subparsers.add_parser("my-drafts",
+                                           help="List your draft posts (requires auth)")
+    drafts_parser.add_argument("--limit", "-l", type=int, default=50,
+                                help="Maximum results (default: 50)")
+    drafts_parser.add_argument("--json", "-j", action="store_true",
+                                help="Output as JSON")
+
+    # Set auth token
+    set_token_parser = subparsers.add_parser("set-token",
+                                              help="Set auth token for a forum")
+    set_token_parser.add_argument("--token", "-t", required=True,
+                                   help="Auth token (from browser dev tools)")
 
     args = parser.parse_args()
 
@@ -614,6 +955,79 @@ Examples:
                     post_title = comment.get("post", {}).get("title", "Unknown")
                     print(f"  - On: {post_title}")
                     print(f"    {comment.get('pageUrl', '')}")
+
+        elif args.command == "post":
+            post = get_post_by_slug(args.slug, forum)
+            if args.json:
+                print(json.dumps(post, indent=2))
+            else:
+                date = format_date(post["postedAt"])
+                author = post.get("user", {}).get("displayName", "Unknown")
+                print(f"\n{post['title']}")
+                print(f"By {author} | {date}")
+                print(f"Score: {post.get('baseScore', 0)} | Comments: {post.get('commentCount', 0)}")
+                print(f"URL: {post.get('pageUrl', '')}")
+                print(f"\n{'='*60}\n")
+                contents = post.get("contents", {}) or {}
+                markdown = contents.get("markdown", "(No content)")
+                print(markdown)
+
+        elif args.command == "search":
+            results = search_posts(args.query, args.limit, forum)
+            if args.json:
+                print(json.dumps(results, indent=2))
+            else:
+                print(f"Posts matching '{args.query}' ({len(results)} results):\n")
+                for post in results:
+                    date = format_date(post["postedAt"])
+                    author = post.get("user", {}).get("displayName", "Unknown")
+                    score = post.get("baseScore", 0)
+                    print(f"  [{date}] {post['title']}")
+                    print(f"    By {author} | Score: {score}")
+                    print(f"    {post.get('pageUrl', '')}\n")
+
+        elif args.command == "create-draft":
+            # Get content from --content or --file
+            if args.content:
+                contents_markdown = args.content
+            elif args.file:
+                with open(args.file, "r") as f:
+                    contents_markdown = f.read()
+            else:
+                print("Error: Must specify --content or --file")
+                sys.exit(1)
+
+            draft = create_draft_post(
+                title=args.title,
+                contents_markdown=contents_markdown,
+                forum=forum,
+                url=args.url,
+                question=args.question
+            )
+
+            print(f"Draft created successfully!")
+            print(f"  Title: {draft['title']}")
+            print(f"  ID: {draft['_id']}")
+            print(f"  URL: {draft.get('pageUrl', 'N/A')}")
+
+        elif args.command == "my-drafts":
+            drafts = get_my_drafts(args.limit, forum)
+            if args.json:
+                print(json.dumps(drafts, indent=2))
+            else:
+                print(f"Your drafts ({len(drafts)}):\n")
+                for draft in drafts:
+                    modified = draft.get("modifiedAt") or draft.get("createdAt", "")
+                    if modified:
+                        modified = format_date(modified)
+                    print(f"  {draft['title']}")
+                    print(f"    Modified: {modified}")
+                    print(f"    URL: {draft.get('pageUrl', 'N/A')}\n")
+
+        elif args.command == "set-token":
+            saved_forum = save_auth_token(forum, args.token)
+            print(f"Auth token saved for {saved_forum}")
+            print(f"Token stored in: {CONFIG_FILE}")
 
     except requests.HTTPError as e:
         print(f"HTTP Error: {e}")
