@@ -303,7 +303,3 @@ python forum_api.py search-topics "query" --limit 10 --forum ea
 - EA Forum requires a separate auth token
 - Drafts are created with `draft: true` and `submitToFrontpage: true`
 - Rate limiting may apply for high-volume requests
-
-## Update check
-
-This skill is managed by [skills.sh](https://skills.sh). To check for updates, run `npx skills update`.
